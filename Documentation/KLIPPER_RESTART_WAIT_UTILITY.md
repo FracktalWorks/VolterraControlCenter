@@ -4,7 +4,7 @@
 
 This document describes the implementation of a reusable utility for restarting Klipper and waiting for it to become ready before continuing execution. This prevents transient "Failed automated reset of MCU 'mcu'" error dialogs that appear during intentional Klipper restarts after saving settings.
 
-## Problem Statement
+## Problem Statement 
 
 When saving calibration results or settings that require a Klipper restart:
 1. The `RESTART` command is sent to Klipper

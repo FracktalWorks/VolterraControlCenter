@@ -158,6 +158,7 @@ class MainController(QtCore.QObject):
         
         # Klipper restart grace period - suppresses transient MCU errors during intentional restarts
         self._klipper_restart_in_progress = False
+        self._handling_critical_error = False  # Re-entrancy guard for showPrinterError
         self._klipper_restart_grace_timer = QtCore.QTimer(self)
         self._klipper_restart_grace_timer.setSingleShot(True)
         self._klipper_restart_grace_timer.timeout.connect(self._end_klipper_restart_grace_period)
@@ -837,6 +838,14 @@ class MainController(QtCore.QObject):
                 self.logger.info(f"Ignoring unhealthy Klipper state during startup grace period ({int(time_since_startup)}s elapsed, need 60s)")
                 return
             
+            # Never trigger automatic FIRMWARE_RESTART recovery during active prints.
+            # Sending FIRMWARE_RESTART while printing causes Klipper to emit
+            # "Printer is not ready", which showPrinterError treats as a critical
+            # error and cancels the print + sends M112.
+            if self.printer_model.printer_status in ["Printing", "Paused"]:
+                self.logger.warning(f"Klipper state '{state}' is unhealthy but printer is {self.printer_model.printer_status} - skipping automatic recovery to avoid disrupting print")
+                return
+            
             # Check if state is not in valid states and refresh is not already running
             if state.lower() not in valid_states and not self.klipper_status_refresh_running:
                 self.logger.warning(f"Klipper state '{state}' is not healthy, triggering STATUS refresh")
@@ -872,6 +881,8 @@ class MainController(QtCore.QObject):
         
         try:
             self.klipper_status_refresh_running = True
+            # Suppress transient errors (MCU reset, "Printer is not ready") from our own FIRMWARE_RESTARTs
+            self._klipper_restart_in_progress = True
             valid_states = ['ready', 'operational', 'idle', 'unknown']
             self.logger.info("Starting Klipper STATUS refresh cycle (up to 5 attempts)")
             
@@ -931,6 +942,7 @@ class MainController(QtCore.QObject):
             self.logger.error(f"Error in refresh_klipper_status: {e}")
         finally:
             self.klipper_status_refresh_running = False
+            self._klipper_restart_in_progress = False
 
     def onStartupCompleted(self):
         """Handle startup operations when printer first becomes operational."""
@@ -1085,10 +1097,20 @@ class MainController(QtCore.QObject):
         self.logger.error(f"Printer error received: {msg}")
         self.logger.debug(f"Cleaned message for processing: {cleaned_msg}")
         
-        # Suppress transient MCU reset errors during intentional Klipper restarts
+        # Re-entrancy guard: if we are already handling a critical error,
+        # suppress secondary errors (e.g., "Shutdown due to M112" from our own M112,
+        # or "Printer is not ready" from our own FIRMWARE_RESTART).
+        if self._handling_critical_error:
+            self.logger.debug(f"Suppressing re-entrant error during critical error handling: {cleaned_msg}")
+            return
+        
+        # Suppress transient errors during intentional Klipper restarts
+        # (FIRMWARE_RESTART causes MCU reset errors and "Printer is not ready" transiently)
         if self._klipper_restart_in_progress:
-            if "Failed automated reset of MCU" in cleaned_msg or "MCU" in cleaned_msg:
-                self.logger.debug(f"Suppressing transient MCU error during Klipper restart: {cleaned_msg}")
+            if ("Failed automated reset of MCU" in cleaned_msg
+                    or "MCU" in cleaned_msg
+                    or "Printer is not ready" in cleaned_msg):
+                self.logger.debug(f"Suppressing transient error during Klipper restart: {cleaned_msg}")
                 return
         
         # Check if this is a "Printer is not ready" error and printer is in expected states
@@ -1106,14 +1128,20 @@ class MainController(QtCore.QObject):
                 if any(error in cleaned_msg for error in CRITICAL_PRINTER_ERRORS):
                     self.logger.error("CRITICAL ERROR SHUTDOWN NEEDED")
                     if self.printer_model.printer_status in ["Starting", "Printing", "Paused"]:
-                        self.octoprint_client.cancelPrint()
-                        self.octoprint_client.gcode(command='M112')
+                        # Set re-entrancy guard before sending M112/FIRMWARE_RESTART
+                        # to suppress the cascade of errors they generate
+                        self._handling_critical_error = True
                         try:
-                            self.octoprint_client.connectPrinter(port="/tmp/printer", baudrate=115200)
-                        except Exception:
-                            self.octoprint_client.connectPrinter(port="VIRTUAL", baudrate=115200)
-                        self.octoprint_client.gcode(command='FIRMWARE_RESTART')
-                        self.octoprint_client.gcode(command='RESTART')
+                            self.octoprint_client.cancelPrint()
+                            self.octoprint_client.gcode(command='M112')
+                            try:
+                                self.octoprint_client.connectPrinter(port="/tmp/printer", baudrate=115200)
+                            except Exception:
+                                self.octoprint_client.connectPrinter(port="VIRTUAL", baudrate=115200)
+                            self.octoprint_client.gcode(command='FIRMWARE_RESTART')
+                            self.octoprint_client.gcode(command='RESTART')
+                        finally:
+                            self._handling_critical_error = False
                         if not self.filamentTriggerDialogShown:
                             self.filamentTriggerDialogShown = True
                             if dialog.WarningOk(self.main_window, cleaned_msg + ", Cancelling Print.", overlay=overlay):
@@ -1132,6 +1160,7 @@ class MainController(QtCore.QObject):
                         if dialog.WarningOk(self.main_window, cleaned_msg, overlay=overlay):
                             self.filamentTriggerDialogShown = False
             except Exception as e:
+                self._handling_critical_error = False
                 self.logger.error(f"Error in MainController.showPrinterError: {e}")
                 dialog.WarningOk(self.main_window, f"Error in MainController.showPrinterError: {e}", overlay=True)
 
