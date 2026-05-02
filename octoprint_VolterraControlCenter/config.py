@@ -14,6 +14,15 @@ CRITICAL_PRINTER_ERRORS = [
     "Shutdown due to M112",
     "Printer is not ready",
     "not heating at expected rate",
+    # Klipper MCU firmware shutdown errors (invoke_shutdown / try_shutdown)
+    "Timer too close",
+    "ADC out of range",
+    "Lost communication with MCU",
+    "Missed scheduling of next",
+    "Rescheduled timer in the past",
+    "Stepper too far in past",
+    "Move queue overflow",
+    "TMC reports error",
 ]
 from collections import OrderedDict
 

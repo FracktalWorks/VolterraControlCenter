@@ -75,6 +75,15 @@ CRITICAL_PRINTER_ERRORS = [
     "Shutdown due to M112",
     "Printer is not ready",
     "not heating at expected rate",
+    # Klipper MCU firmware shutdown errors (invoke_shutdown / try_shutdown)
+    "Timer too close",
+    "ADC out of range",
+    "Lost communication with MCU",
+    "Missed scheduling of next",
+    "Rescheduled timer in the past",
+    "Stepper too far in past",
+    "Move queue overflow",
+    "TMC reports error",
 ]
 ```
 
@@ -92,6 +101,14 @@ CRITICAL_PRINTER_ERRORS = [
 | `Shutdown due to M112` | Emergency stop (shutdown) | Re-entrancy guard handles self-inflicted |
 | `Printer is not ready` | Klipper not in ready state | Guards handle transient cases |
 | `not heating at expected rate` | `verify_heater` failure (shutdown) | Yes — genuine critical |
+| `Timer too close` | Real-time scheduler overflow — MCU overloaded (shutdown) | Yes — genuine HW failure |
+| `ADC out of range` | Thermistor reading invalid — sensor failure/short (shutdown) | Yes — genuine HW failure |
+| `Lost communication with MCU` | Serial/USB link dropped (shutdown) | Yes — genuine HW failure |
+| `Missed scheduling of next` | Timer scheduling failure (shutdown) | Yes — genuine HW failure |
+| `Rescheduled timer in the past` | Timer scheduling failure (shutdown) | Yes — genuine HW failure |
+| `Stepper too far in past` | Stepper queue timing overflow (shutdown) | Yes — genuine HW failure |
+| `Move queue overflow` | Motion queue full (shutdown) | Yes — genuine HW failure |
+| `TMC reports error` | TMC driver error — overcurrent/overtemp (shutdown) | Yes — genuine HW failure |
 
 ---
 
