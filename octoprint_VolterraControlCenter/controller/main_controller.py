@@ -369,34 +369,35 @@ class MainController(QtCore.QObject):
             self.logger.error(f"Error checking firmware update: {e}")
 
     def perform_firmware_update(self, current_printer: str, printer_display_name: str):
-        """Perform the firmware update by copying files and restarting."""
+        """Perform the firmware update by copying files and restarting.
+        
+        NOTE: M502 is intentionally NOT sent here — it has no definition in Klipper
+        and would generate a spurious "Unknown command" error dialog.
+        M500 (SAVE_CONFIG NO_RESTART=1) IS sent to flush any unsaved in-memory
+        calibration state (probe offset, bed mesh, PID values) to disk before restart.
+        copy_firmware_files() also preserves the file-level SAVE_CONFIG section,
+        so M500 covers any in-memory adjustments not yet written to file.
+        """
         try:
-            from utils.printer_config_manager import copy_firmware_files, restore_octoprint_configs
+            from utils.printer_config_manager import copy_firmware_files
             
             self.logger.info(f"Performing firmware update for {current_printer}")
             
-            # Copy firmware files (same as restore_print_settings)
+            # Copy firmware files and OctoPrint configs (restore_octoprint_configs is
+            # called internally by copy_firmware_files, no need to call it again here)
             success = copy_firmware_files(current_printer)
             
-            # Also restore OctoPrint configurations
             if success:
-                self.logger.info("Restoring OctoPrint configurations...")
-                octoprint_success = restore_octoprint_configs(current_printer)
-                if not octoprint_success:
-                    self.logger.warning("Failed to restore OctoPrint configs, but Klipper config was successful")
-            
-            if success:
-                self.logger.info("Firmware files updated successfully, executing printer reset commands")
+                self.logger.info("Firmware files updated successfully, restarting Klipper")
                 
-                # Reset printer firmware settings (same as restore_print_settings)
                 try:
-                    self.octoprint_client.gcode(command='M502')  # Load factory defaults
-                    self.octoprint_client.gcode(command='M500')  # Save settings to EEPROM
+                    # Suppress transient MCU reset errors that FIRMWARE_RESTART generates
+                    self._klipper_restart_in_progress = True
+                    self.octoprint_client.gcode(command='M500')  # Flush in-memory calibration to disk
                     self.octoprint_client.gcode(command='FIRMWARE_RESTART')  # Restart Klipper
                     
                     self.logger.info("Firmware update completed successfully")
                     
-                    # Show success message with restart dialog (same as restore_print_settings)
                     restart_msg = (
                         f"Firmware updated successfully!\n\n"
                         f"'{printer_display_name}' has been updated to the latest version.\n\n"
@@ -405,10 +406,11 @@ class MainController(QtCore.QObject):
                     self.restart_printer_system(restart_msg)
                     
                 except Exception as e:
-                    self.logger.error(f"Error executing printer reset commands: {e}")
+                    self._klipper_restart_in_progress = False
+                    self.logger.error(f"Error executing firmware reset commands: {e}")
                     dialog.WarningOk(
                         self.main_window, 
-                        f"Firmware files updated but failed to reset printer firmware: {e}\n"
+                        f"Firmware files updated but failed to restart Klipper: {e}\n"
                         "Please manually restart the printer.",
                         overlay=True
                     )
